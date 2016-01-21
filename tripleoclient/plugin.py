@@ -19,6 +19,7 @@ import logging
 
 from ironicclient import client as ironic_client
 from openstackclient.common import utils
+from swiftclient import client as swift_client
 
 
 LOG = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ class ClientWrapper(object):
         self._instance = instance
         self._baremetal = None
         self._orchestration = None
+        self._object_store = None
 
     @property
     def baremetal(self):
@@ -129,3 +131,26 @@ class ClientWrapper(object):
 
         self._orchestration = client
         return self._orchestration
+
+
+    @property
+    def object_store(self):
+        """Returns an object_store service client"""
+
+        if self._object_store is not None:
+            return self._object_store
+
+        endpoint = self._instance.get_endpoint_for_service_type(
+            "object-store",
+            region_name=self._instance._region_name,
+        )
+
+        token = self._instance.auth.get_token(self._instance.session)
+
+        kwargs = {
+            'preauthurl': endpoint,
+            'preauthtoken': token
+        }
+
+        self._object_store = swift_client.Connection(**kwargs)
+        return self._object_store

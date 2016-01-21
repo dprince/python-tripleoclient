@@ -33,7 +33,7 @@ SERVICE_LIST = {
 }
 
 TRIPLEO_HEAT_TEMPLATES = "/usr/share/openstack-tripleo-heat-templates/"
-OVERCLOUD_YAML_NAMES = ("overcloud-without-mergepy.yaml", "overcloud.yaml")
+OVERCLOUD_YAML_NAMES = ("overcloud.yaml", "overcloud-without-mergepy.yaml")
 RESOURCE_REGISTRY_NAME = "overcloud-resource-registry-puppet.yaml"
 RHEL_REGISTRATION_EXTRACONFIG_NAME = (
     "extraconfig/post_deploy/rhel-registration/")

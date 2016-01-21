@@ -18,6 +18,7 @@ import argparse
 import collections
 import glob
 import json
+import yaml
 import logging
 import os
 import re
@@ -38,6 +39,7 @@ from os_cloud_config import keystone
 from os_cloud_config import keystone_pki
 from os_cloud_config.utils import clients
 from tripleo_common import update
+from tripleo_common.utils import tarball
 
 from tripleoclient import constants
 from tripleoclient import exceptions
@@ -58,8 +60,8 @@ class DeployOvercloud(command.Command):
         :type parameters: dict
         """
 
-        undercloud_ceilometer_snmpd_password = utils.get_config_value(
-            "auth", "undercloud_ceilometer_snmpd_password")
+        #undercloud_ceilometer_snmpd_password = utils.get_config_value(
+            #"auth", "undercloud_ceilometer_snmpd_password")
 
         passwords = utils.generate_overcloud_passwords()
         ceilometer_pass = passwords['OVERCLOUD_CEILOMETER_PASSWORD']
@@ -82,8 +84,8 @@ class DeployOvercloud(command.Command):
             passwords['OVERCLOUD_SAHARA_PASSWORD'])
         parameters['SwiftHashSuffix'] = passwords['OVERCLOUD_SWIFT_HASH']
         parameters['SwiftPassword'] = passwords['OVERCLOUD_SWIFT_PASSWORD']
-        parameters['SnmpdReadonlyUserPassword'] = (
-            undercloud_ceilometer_snmpd_password)
+        #parameters['SnmpdReadonlyUserPassword'] = (
+            #undercloud_ceilometer_snmpd_password)
         parameters['NeutronMetadataProxySharedSecret'] = (
             passwords['NEUTRON_METADATA_PROXY_SHARED_SECRET'])
 
@@ -222,35 +224,72 @@ class DeployOvercloud(command.Command):
     def _heat_deploy(self, stack, stack_name, template_path, parameters,
                      environments, timeout):
         """Verify the Baremetal nodes are available and do a stack update"""
+        clients = self.app.client_manager
+        object_client = clients.tripleoclient.object_store
 
-        self.log.debug("Processing environment files")
-        env_files, env = (
-            template_utils.process_multiple_environments_and_files(
-                environments))
+        # Upload templates to a Swift container
+        templates_base = os.path.dirname(template_path)
+        handle, temp_tarball = tempfile.mkstemp()
+        os.close(handle)
+        tarball.create_tarball(templates_base, temp_tarball)
+        tarball.tarball_extract_to_swift_container(object_client, temp_tarball,
+                                                   stack_name)
+
         if stack:
             update.add_breakpoints_cleanup_into_env(env)
 
-        self.log.debug("Getting template contents")
-        template_files, template = template_utils.get_template_contents(
-            template_path)
-
-        files = dict(list(template_files.items()) + list(env_files.items()))
-
-        clients = self.app.client_manager
         orchestration_client = clients.tripleoclient.orchestration
+        workflow_client = clients.workflow_engine
 
-        self.log.debug("Deploying stack: %s", stack_name)
-        self.log.debug("Deploying template: %s", template)
-        self.log.debug("Deploying parameters: %s", parameters)
-        self.log.debug("Deploying environment: %s", env)
-        self.log.debug("Deploying files: %s", files)
-
-        stack_args = {
-            'stack_name': stack_name,
-            'template': template,
-            'environment': env,
-            'files': files
+        workflow_env = {
+            'name': stack_name,
+            'description': 'TripleO environment: %s' % stack_name,
+            'variables': {
+                'container': stack_name,
+                'template': os.path.basename(template_path),
+                'environments': []
+            }
         }
+        for env in environments:
+            if env.startswith(templates_base):
+                # include in-tree environments by relative object path
+                workflow_env['variables']['environments'].append({
+                    'path': env[(len(templates_base)+1):]
+                })
+            else:
+                # for out of tree environments we store the data directly
+                # NOTE: we use YAML to load so that either json or YAML
+                # ad-hoc environments are supported in this manner
+                with open(env, 'r') as temp_env:
+                    workflow_env['variables']['environments'].append(
+                        {'data': yaml.load(temp_env.read())}
+                    )
+
+
+        try:
+            workflow_client.environments.get(stack_name)
+            workflow_client.environments.update(**workflow_env)
+        except:
+            workflow_client.environments.create(**workflow_env)
+
+        execution = workflow_client.executions.create(
+            'tripleo.test.deploy',
+            env=stack_name
+        )
+        state = 'RUNNING'
+
+        print('Waiting for execution to finish..')
+        while state == 'RUNNING':
+            print('...')
+            execution = workflow_client.executions.get(execution.id)
+            state = execution.state
+            time.sleep(3)
+
+        print(execution.state_info)
+        #print(str(execution))
+
+        #FIXME(dprince): exit here for quick testing
+        sys.exit(0)
 
         if timeout:
             stack_args['timeout_mins'] = timeout
@@ -379,13 +418,12 @@ class DeployOvercloud(command.Command):
                                                environments, timeout):
         for overcloud_yaml_name in constants.OVERCLOUD_YAML_NAMES:
             overcloud_yaml = os.path.join(tht_root, overcloud_yaml_name)
-            try:
+            if os.path.exists(overcloud_yaml):
                 self._heat_deploy(stack, stack_name, overcloud_yaml,
                                   parameters, environments, timeout)
-            except six.moves.urllib.error.URLError:
-                pass
-            else:
                 return
+            else:
+                pass
         message = "The files {0} not found in the {1} directory".format(
             constants.OVERCLOUD_YAML_NAMES, tht_root)
         raise ValueError(message)
