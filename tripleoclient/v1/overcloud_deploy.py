@@ -273,7 +273,7 @@ class DeployOvercloud(command.Command):
             workflow_client.environments.create(**workflow_env)
 
         execution = workflow_client.executions.create(
-            'tripleo.test.deploy',
+            'tripleo.overcloud_deploy.v1.deploy',
             env=stack_name
         )
         state = 'RUNNING'
